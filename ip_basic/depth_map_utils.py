@@ -30,6 +30,15 @@ CROSS2_KERNEL_3 = np.asarray(
     dtype=np.uint8,
 )
 
+STAR_KERNEL_3 = np.asarray(
+    [
+        [1, 1, 1],
+        [1, 1, 1],
+        [1, 1, 1],
+    ],
+    dtype=np.uint8,
+)
+
 # 5x5 cross kernel
 CROSS_KERNEL_5 = np.asarray(
     [
@@ -50,6 +59,17 @@ CROSS2_KERNEL_5 = np.asarray(
         [0, 0, 1, 0, 0],
         [0, 1, 0, 1, 0],
         [1, 0, 0, 0, 1],
+    ],
+    dtype=np.uint8,
+)
+
+STAR_KERNEL_5 = np.asarray(
+    [
+        [1, 0, 1, 0, 1],
+        [0, 1, 1, 1, 0],
+        [1, 1, 1, 1, 1],
+        [0, 1, 1, 1, 0],
+        [1, 0, 1, 0, 1],
     ],
     dtype=np.uint8,
 )
@@ -94,6 +114,18 @@ CROSS2_KERNEL_7 = np.asarray(
     dtype=np.uint8,
 )
 
+STAR_KERNEL_7 = np.asarray(
+    [
+        [1, 0, 0, 1, 0, 0, 1],
+        [0, 1, 0, 1, 0, 1, 0],
+        [0, 0, 1, 1, 1, 0, 0],
+        [1, 1, 1, 1, 1, 1, 1],
+        [0, 0, 1, 1, 1, 0, 0],
+        [0, 1, 0, 1, 0, 1, 0],
+        [1, 0, 0, 1, 0, 0, 1],
+    ],
+    dtype=np.uint8,
+)
 # 7x7 diamond kernel
 DIAMOND_KERNEL_7 = np.asarray(
     [
@@ -107,6 +139,78 @@ DIAMOND_KERNEL_7 = np.asarray(
     ],
     dtype=np.uint8,
 )
+
+STAR_KERNEL_9 = np.zeros((9, 9), dtype=np.uint8)
+STAR_KERNEL_9[4, :] = 1
+STAR_KERNEL_9[:, 4] = 1
+STAR_KERNEL_9[[1, 2, 3, 5, 6, 7], [1, 2, 3, 5, 6, 7]] = 1
+STAR_KERNEL_9[[1, 2, 3, 5, 6, 7], [7, 6, 5, 3, 2, 1]] = 1
+
+# 11x11 星型核
+STAR_KERNEL_11 = np.zeros((11, 11), dtype=np.uint8)
+STAR_KERNEL_11[5, :] = 1
+STAR_KERNEL_11[:, 5] = 1
+STAR_KERNEL_11[[1, 2, 3, 4, 6, 7, 8, 9], [1, 2, 3, 4, 6, 7, 8, 9]] = 1
+STAR_KERNEL_11[[1, 2, 3, 4, 6, 7, 8, 9], [9, 8, 7, 6, 4, 3, 2, 1]] = 1
+
+# 15x15 星型核
+STAR_KERNEL_15 = np.zeros((15, 15), dtype=np.uint8)
+STAR_KERNEL_15[7, :] = 1
+STAR_KERNEL_15[:, 7] = 1
+STAR_KERNEL_15[
+    [1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13], [1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13]
+] = 1
+STAR_KERNEL_15[
+    [1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13], [13, 12, 11, 10, 9, 8, 6, 5, 4, 3, 2, 1]
+] = 1
+
+
+def compute_distance_map(height, width):
+    """计算每个像素到中心的归一化距离"""
+    center_y, center_x = height / 2, width / 2  # 中心点 (259, 259)
+    y, x = np.indices((height, width))
+    distances = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
+    max_distance = np.sqrt(center_x**2 + center_y**2)  # 最大距离（中心到角落）
+    distance_map = distances / max_distance  # 归一化到 [0, 1]
+    return distance_map
+
+
+DISTANCE_MAP = compute_distance_map(518, 518)
+
+
+def get_kernel_by_distance(distance):
+    """根据距离选择星型核，中心小核，边缘大核"""
+    print(distance)
+    if distance < 0.3:
+        return CROSS_KERNEL_3  # 中心
+    elif distance < 0.6:
+        return CROSS_KERNEL_5  # 中间
+    else:
+        return CROSS_KERNEL_7  # 边缘
+
+
+def adaptive_filter(depth, valid_mask, distance_map):
+    """修复版自适应滤波，基于空间距离选择核大小，确保深度传播"""
+    filtered = np.zeros_like(depth)
+
+    working_depth = np.zeros_like(depth)
+    working_depth[valid_mask] = depth[valid_mask]
+
+    distance_bins = [0.3, 0.6]
+    masks = [
+        distance_map < distance_bins[0],  # 中心
+        (distance_map >= distance_bins[0]) & (distance_map < distance_bins[1]),  # 中间
+        distance_map >= distance_bins[1],  # 边缘
+    ]
+
+    for mask, bin_distance in zip(masks, [0.1, 0.45, 0.8]):
+        kernel = get_kernel_by_distance(bin_distance)
+        filtered_region = cv2.dilate(working_depth, kernel)
+        working_depth = np.where(mask, filtered_region, working_depth)
+
+    filtered = working_depth
+    filtered[valid_mask] = depth[valid_mask]
+    return filtered
 
 
 def fill_in_fast(
@@ -227,14 +331,30 @@ def fill_in_multiscale(
     s1_inverted_depths[valid_pixels] = max_depth - s1_inverted_depths[valid_pixels]
 
     # Multi-scale dilation
-    dilated_far = cv2.dilate(
-        np.multiply(s1_inverted_depths, valid_pixels_far), dilation_kernel_far
+    # dilated_far = cv2.dilate(
+    #     np.multiply(s1_inverted_depths, valid_pixels_far), dilation_kernel_far
+    # )
+    # dilated_med = cv2.dilate(
+    #     np.multiply(s1_inverted_depths, valid_pixels_med), dilation_kernel_med
+    # )
+    # dilated_near = cv2.dilate(
+    #     np.multiply(s1_inverted_depths, valid_pixels_near), dilation_kernel_near
+    # )
+
+    dilated_far = adaptive_filter(
+        s1_inverted_depths,
+        valid_pixels_far,
+        DISTANCE_MAP,
     )
-    dilated_med = cv2.dilate(
-        np.multiply(s1_inverted_depths, valid_pixels_med), dilation_kernel_med
+    dilated_med = adaptive_filter(
+        s1_inverted_depths,
+        valid_pixels_med,
+        DISTANCE_MAP,
     )
-    dilated_near = cv2.dilate(
-        np.multiply(s1_inverted_depths, valid_pixels_near), dilation_kernel_near
+    dilated_near = adaptive_filter(
+        s1_inverted_depths,
+        valid_pixels_near,
+        DISTANCE_MAP,
     )
 
     # Find valid pixels for each binned dilation
