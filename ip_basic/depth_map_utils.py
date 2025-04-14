@@ -180,7 +180,6 @@ DISTANCE_MAP = compute_distance_map(518, 518)
 
 def get_kernel_by_distance(distance):
     """根据距离选择星型核，中心小核，边缘大核"""
-    print(distance)
     if distance < 0.3:
         return CROSS_KERNEL_3  # 中心
     elif distance < 0.6:
@@ -294,7 +293,7 @@ def fill_in_multiscale(
     dilation_kernel_near=CROSS_KERNEL_7,
     extrapolate=False,
     blur_type="bilateral",
-    show_process=False,
+    show_process=True,
 ):
     """Slower, multi-scale dilation version with additional noise removal that
     provides better qualitative results.
@@ -318,6 +317,7 @@ def fill_in_multiscale(
     """
 
     # Convert to float32
+
     depths_in = np.float32(depth_map)
 
     # Calculate bin masks before inversion
@@ -397,33 +397,36 @@ def fill_in_multiscale(
 
     # Extend highest pixel to top of image or create top mask
     s6_extended_depths = np.copy(s5_dilated_depths)
-    top_mask = np.ones(s5_dilated_depths.shape, dtype=bool)
+    # top_mask = np.ones(s5_dilated_depths.shape, dtype=bool)
 
-    top_row_pixels = np.argmax(s5_dilated_depths > 0.1, axis=0)
-    top_pixel_values = s5_dilated_depths[
-        top_row_pixels, range(s5_dilated_depths.shape[1])
-    ]
+    # top_row_pixels = np.argmax(s5_dilated_depths > 0.1, axis=0)
+    # top_pixel_values = s5_dilated_depths[
+    #     top_row_pixels, range(s5_dilated_depths.shape[1])
+    # ]
 
-    for pixel_col_idx in range(s5_dilated_depths.shape[1]):
-        if extrapolate:
-            s6_extended_depths[0 : top_row_pixels[pixel_col_idx], pixel_col_idx] = (
-                top_pixel_values[pixel_col_idx]
-            )
-        else:
-            # Create top mask
-            top_mask[0 : top_row_pixels[pixel_col_idx], pixel_col_idx] = False
+    # for pixel_col_idx in range(s5_dilated_depths.shape[1]):
+    #     if extrapolate:
+    #         s6_extended_depths[0 : top_row_pixels[pixel_col_idx], pixel_col_idx] = (
+    #             top_pixel_values[pixel_col_idx]
+    #         )
+    #     else:
+    #         # Create top mask
+    #         top_mask[0 : top_row_pixels[pixel_col_idx], pixel_col_idx] = False
 
     # Fill large holes with masked dilations
     s7_blurred_depths = np.copy(s6_extended_depths)
     for i in range(6):
-        empty_pixels = (s7_blurred_depths < 0.1) & top_mask
-        dilated = cv2.dilate(s7_blurred_depths, FULL_KERNEL_5)
+        empty_pixels = s7_blurred_depths < 0.1
+        dilated = cv2.dilate(s7_blurred_depths, FULL_KERNEL_7)
         s7_blurred_depths[empty_pixels] = dilated[empty_pixels]
+        blurred = cv2.medianBlur(s7_blurred_depths, 5)
+        valid_pixels = s7_blurred_depths > 0.1
+        s7_blurred_depths[valid_pixels] = blurred[valid_pixels]
 
     # Median blur
-    blurred = cv2.medianBlur(s7_blurred_depths, 5)
-    valid_pixels = (s7_blurred_depths > 0.1) & top_mask
-    s7_blurred_depths[valid_pixels] = blurred[valid_pixels]
+    # blurred = cv2.medianBlur(s7_blurred_depths, 5)
+    # valid_pixels = (s7_blurred_depths > 0.1) & top_mask
+    # s7_blurred_depths[valid_pixels] = blurred[valid_pixels]
 
     if blur_type == "gaussian":
         # Gaussian blur
@@ -432,7 +435,7 @@ def fill_in_multiscale(
         s7_blurred_depths[valid_pixels] = blurred[valid_pixels]
     elif blur_type == "bilateral":
         # Bilateral blur
-        blurred = cv2.bilateralFilter(s7_blurred_depths, 5, 0.5, 2.0)
+        blurred = cv2.bilateralFilter(s7_blurred_depths, 5, 0.5, 100)
         s7_blurred_depths[valid_pixels] = blurred[valid_pixels]
 
     # Invert (and offset)
@@ -458,5 +461,8 @@ def fill_in_multiscale(
         process_dict["s8_inverted_depths"] = s8_inverted_depths
 
         process_dict["s9_depths_out"] = depths_out
+
+    for key, val in process_dict.items():
+        print(key, "is nan{}".format(np.isnan(val).astype(np.uint8).sum()))
 
     return depths_out, process_dict
